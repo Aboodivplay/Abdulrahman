@@ -2,23 +2,114 @@
 Projects 
 import pandas as pd
 import numpy as np
-data = pd.read_csv('projects\owid-covid-data.csv')
-print("Dataset Loaded\n", data.head())
-data = data[['location', 'date', 'total_cases', 'total_deaths', 'new_cases', 'new_deaths', 'people_fully_vaccinated_per_hundred']]
-data['date'] = pd.to_datetime(data['date'])
-data = data.dropna(subset=['total_cases', 'total_deaths', 'new_cases', 'new_deaths'])
-data.fillna(0, inplace=True)
-print("Data Cleaned\n", data.info())
-data['case_fatality_rate'] = (data['total_deaths'] / data['total_cases']) * 100
-global_data = data[data['location'] == 'World']
-total_global_cases = global_data['total_cases'].max()
-total_global_deaths = global_data['total_deaths'].max()
-print(f"Global Total Cases: {total_global_cases}, Global Total Deaths: {total_global_deaths}")
-top_countries_by_cases = data.groupby('location')['total_cases'].max().sort_values(ascending=False).head(5)
-top_countries_by_vaccination = data.groupby('location')['people_fully_vaccinated_per_hundred'].max().sort_values(ascending=False).head(5)
-print("Top 5 Countries by Total Cases:\n", top_countries_by_cases)
-print("Top 5 Countries by Vaccination Rate:\n", top_countries_by_vaccination)
-print("Conclusions:")
-print(f"The global case fatality rate is {np.mean(data['case_fatality_rate']):.2f}%.")
-print(f"The highest number of total cases was observed in:\n{top_countries_by_cases}")
-print(f"The highest vaccination rate was observed in:\n{top_countries_by_vaccination}")
+import json
+import requests
+from bs4 import BeautifulSoup
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+import threading
+from queue import Queue
+
+#loads csv data from file path
+def load_data(file_path):
+    data = pd.read_csv(file_path)
+    return data
+
+#cleans data by dropping missing values and duplicates
+def clean_data(data):
+    cleaned_data = data.dropna(subset=['location', 'total_cases', 'total_deaths'])
+    cleaned_data = cleaned_data.drop_duplicates()
+    return cleaned_data
+
+#scales specified column using standard scaler
+def scale_data(data, column_name):
+    scaler = StandardScaler()
+    scaled_column = scaler.fit_transform(data[[column_name]])
+    scaled_column = np.round(scaled_column, 2)
+    return scaled_column
+
+#encodes specified column using one hot encoder
+def encode_data(data, column_name):
+    encoder = OneHotEncoder()
+    encoded = encoder.fit_transform(data[[column_name]])
+    return encoded.toarray()
+
+#writes data to a json file
+def write_json(data, file_path):
+    with open(file_path, 'w') as file:
+        json.dump(data, file, indent=4)
+
+#reads data from a json file
+def read_json(file_path):
+    with open(file_path, 'r') as file:
+        return json.load(file)
+
+#scrapes data from a webpage by extracting all h2 elements
+def web_scrape(url):
+    response = requests.get(url)
+    soup = BeautifulSoup(response.content, "html.parser")
+    return [element.text for element in soup.find_all('h2')]
+
+#processes data chunk by summing numeric columns
+def process_chunk(chunk):
+    numeric_chunk = chunk.select_dtypes(include=[np.number])
+    return numeric_chunk.sum().values
+
+#runs multithreading for processing data in chunks
+def run_multithreading(data_chunks):
+    threads = []
+    results = Queue()
+    def thread_function(result_queue, chunk):
+        result_queue.put(process_chunk(chunk))
+    for chunk in data_chunks:
+        thread = threading.Thread(target=thread_function, args=(results, chunk))
+        threads.append(thread)
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    #collect all results from the queue
+    all_results = []
+    while not results.empty():
+        all_results.append(results.get())
+    return np.sum(all_results, axis=0)
+
+#calculates total deaths and highest number of deaths
+def calculate_deaths(data):
+    if 'total_deaths' not in data.columns or data.empty:
+        return 0, 0
+    total_deaths = data['total_deaths'].sum()
+    max_deaths = data['total_deaths'].max()
+    return total_deaths, max_deaths
+
+#main function to run the full pipeline
+def main():
+    file_path = './projects/owid-covid-data.csv'
+    data = load_data(file_path)
+    cleaned_data = clean_data(data)
+    cleaned_data['scaled_cases'] = scale_data(cleaned_data, 'total_cases')
+    encoded_countries = encode_data(cleaned_data, 'location')
+    json_data = {"example": {"key": "value", "nested": {"number": 42}}}
+    json_file_path = './projects/example.json'
+    write_json(json_data, json_file_path)
+    loaded_json = read_json(json_file_path)
+    nested_value = loaded_json["example"]["nested"]["number"]
+    url = "https://example.com"
+    scraped_data = web_scrape(url)
+
+    #split data for multithreading
+    data_chunks = [
+        cleaned_data.iloc[:len(cleaned_data) // 2],
+        cleaned_data.iloc[len(cleaned_data) // 2:],]
+    result = run_multithreading(data_chunks)
+
+    #calculate death statistics
+    total_deaths, max_deaths = calculate_deaths(cleaned_data)
+    print(cleaned_data.head())
+    print(encoded_countries[:5])
+    print("Nested value from JSON:", nested_value)
+    print("Scraped data:", scraped_data)
+    print("Processed data sum:", result)
+    print("Total deaths:", total_deaths)
+    print("Highest number of deaths:", max_deaths)
+if __name__ == "__main__":
+    main()
